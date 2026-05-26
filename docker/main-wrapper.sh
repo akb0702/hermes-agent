@@ -21,6 +21,12 @@ if [ $# -eq 0 ]; then
     exec s6-setuidgid hermes hermes
 fi
 
+if [ "$1" = "/opt/hermes/docker/run_web_server.py" ]; then
+    # Python scripts with shebangs are not found by `command -v`, so we
+    # handle the web server path explicitly.
+    exec s6-setuidgid hermes "$@"
+fi
+
 if command -v "$1" >/dev/null 2>&1; then
     # Bare executable — pass through directly.
     exec s6-setuidgid hermes "$@"
