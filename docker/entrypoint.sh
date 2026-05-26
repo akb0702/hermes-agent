@@ -16,6 +16,11 @@ cat > /opt/data/.hermes/.env << EOF
 OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
 EOF
 
-# Start Hermes web server directly
-exec /opt/hermes/.venv/bin/python -m hermes_cli.web_server --port 8080 --host 0.0.0.0
+# Start Hermes web server via Python
+exec /opt/hermes/.venv/bin/python << 'PYEOF'
+import sys
+sys.path.insert(0, '/opt/hermes')
+from hermes_cli.web_server import start_server
+start_server(host='0.0.0.0', port=8080)
+PYEOF
 
