@@ -16,6 +16,6 @@ cat > /opt/data/.hermes/.env << EOF
 OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
 EOF
 
-# Start the main process
-exec /init /opt/hermes/docker/main-wrapper.sh
+# Start Hermes in server mode
+exec /opt/hermes/.venv/bin/python -m hermes_cli.server
 
