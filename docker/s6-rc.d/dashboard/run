@@ -1,10 +1,45 @@
-#!/command/with-contenv sh
+#!/bin/sh
 # shellcheck shell=sh
 # Dashboard service. Always declared so s6 has a supervised slot; if
 # HERMES_DASHBOARD isn't truthy the run script exits cleanly and the
 # companion finish script returns 125 (s6's "permanent failure, do
 # not restart" marker), so s6-svstat reports the slot as down. See
 # also docker/s6-rc.d/dashboard/finish.
+#
+# NOTE: This run script no longer uses `#!/command/with-contenv sh`.
+# s6-overlay's with-contenv has been observed to drop env vars
+# (notably ADMIN_PASSWORD, API_SERVER_KEY) when running on Railway,
+# leaving supervised services without container-injected secrets even
+# though the dashboard CMD inherits them fine. We source /proc/1/environ
+# instead via the helper below — see docker/lib/source-container-env.sh.
+
+# Re-import the full container env from PID 1 before anything reads it.
+# shellcheck disable=SC1091
+. /dev/stdin <<EOF
+$(python3 - <<'PY'
+import shlex
+try:
+    with open('/proc/1/environ', 'rb') as f:
+        blob = f.read()
+except OSError:
+    blob = b''
+for entry in blob.split(b'\x00'):
+    if not entry or b'=' not in entry:
+        continue
+    name, _, value = entry.partition(b'=')
+    try:
+        name_s = name.decode('utf-8')
+        value_s = value.decode('utf-8')
+    except UnicodeDecodeError:
+        continue
+    if not name_s or not (name_s[0].isalpha() or name_s[0] == '_'):
+        continue
+    if not all(c.isalnum() or c == '_' for c in name_s):
+        continue
+    print(f"export {name_s}={shlex.quote(value_s)}")
+PY
+)
+EOF
 
 case "${HERMES_DASHBOARD:-}" in
     1|true|TRUE|True|yes|YES|Yes) ;;
