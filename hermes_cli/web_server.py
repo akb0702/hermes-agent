@@ -4917,6 +4917,26 @@ def start_server(
         if any(s in k.upper() for s in ("ADMIN", "PASSWORD", "API_SERVER", "HERMES", "RAILWAY", "OPENROUTER"))
     )
     print(f"  Env var names visible to process: {_interesting}", flush=True)
+    # Diagnostic: read /proc/1/environ directly so we can tell whether env
+    # is being stripped along the exec chain (PID 1 → main-wrapper.sh →
+    # s6-setuidgid → python3). If PID 1 has the vars but we don't, the
+    # strip is in our chain; if PID 1 also lacks them, Railway/Docker
+    # never injected them in the first place.
+    try:
+        with open("/proc/1/environ", "rb") as _f:
+            _pid1_blob = _f.read()
+        _pid1_names = sorted(
+            entry.split(b"=", 1)[0].decode("utf-8", "replace")
+            for entry in _pid1_blob.split(b"\x00")
+            if entry and b"=" in entry
+        )
+        _pid1_interesting = [
+            k for k in _pid1_names
+            if any(s in k.upper() for s in ("ADMIN", "PASSWORD", "API_SERVER", "HERMES", "RAILWAY", "OPENROUTER"))
+        ]
+        print(f"  Env var names visible to PID 1: {_pid1_interesting} (total: {len(_pid1_names)})", flush=True)
+    except Exception as _e:
+        print(f"  Could not read /proc/1/environ: {_e}", flush=True)
     # proxy_headers=False so _ws_client_is_allowed sees the real connection peer
     # rather than X-Forwarded-For's rewritten value (which would defeat the
     # loopback gate when behind a reverse proxy).
