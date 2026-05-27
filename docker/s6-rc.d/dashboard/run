@@ -35,6 +35,26 @@ case "$dash_host" in
     *) insecure="--insecure" ;;
 esac
 
+# Pre-bind probe: if another process (typically the main CMD's
+# run_web_server.py) is already serving on this port, exit cleanly and
+# let the finish script mark this slot as permanently down. Without
+# this, s6 would restart us in a tight loop on EADDRINUSE.
+if ! python3 -c "
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(('0.0.0.0', int('${dash_port}')))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+"; then
+    echo "  dashboard service: port ${dash_port} already bound — going idle." >&2
+    # Sleep forever so s6 keeps the slot 'up' (avoids restart spam) but
+    # we never try to bind. The finish script handles termination.
+    exec sleep infinity
+fi
+
 # shellcheck disable=SC2086  # word-splitting of $insecure is intentional
 exec s6-setuidgid hermes hermes dashboard \
     --host "$dash_host" --port "$dash_port" --no-open $insecure
