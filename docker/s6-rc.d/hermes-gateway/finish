@@ -1,0 +1,14 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Hermes gateway finish script. Same shape as the dashboard finish: when
+# API_SERVER_ENABLED is unset/falsy we return 125 so s6-supervise leaves
+# the slot in 'down' state instead of restart-spamming the no-op run.
+
+case "${API_SERVER_ENABLED:-}" in
+    1|true|TRUE|True|yes|YES|Yes)
+        exit 0
+        ;;
+    *)
+        exit 125
+        ;;
+esac

@@ -1,0 +1,44 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Hermes gateway (OpenAI-compatible API server) supervised service.
+#
+# Runs only when API_SERVER_ENABLED is truthy. When disabled, the run
+# script exits cleanly and the companion finish script returns 125 so
+# s6-supervise leaves the slot in 'down' state instead of looping.
+#
+# Bind defaults to 127.0.0.1:8642 — the dashboard FastAPI app
+# (web_server.py) reverse-proxies /v1/* to this loopback address, so
+# external traffic stays gated behind the dashboard's auth/middleware
+# stack and only the API_SERVER_KEY-protected /v1 surface is exposed.
+
+case "${API_SERVER_ENABLED:-}" in
+    1|true|TRUE|True|yes|YES|Yes) ;;
+    *)
+        exit 0
+        ;;
+esac
+
+cd /opt/data
+# shellcheck disable=SC1091
+. /opt/hermes/.venv/bin/activate
+
+api_host="${API_SERVER_HOST:-127.0.0.1}"
+api_port="${API_SERVER_PORT:-8642}"
+
+# Pre-bind probe — same defensive pattern as the dashboard service.
+# Avoids tight EADDRINUSE restart loops if the port is already taken.
+if ! python3 -c "
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(('${api_host}', int('${api_port}')))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+"; then
+    echo "  hermes-gateway service: ${api_host}:${api_port} already bound — going idle." >&2
+    exec sleep infinity
+fi
+
+exec s6-setuidgid hermes hermes gateway run
