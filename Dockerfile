@@ -4,6 +4,13 @@ FROM debian:13.4
 # Disable Python stdout buffering to ensure logs are printed immediately
 ENV PYTHONUNBUFFERED=1
 
+# Tell s6-overlay's /init to PRESERVE the container environment when it
+# execs the main program. Default is to clear it, which silently drops
+# every Railway/Docker -e env var (ADMIN_PASSWORD, HERMES_HOME, …) by
+# the time our Python CMD runs, breaking the dashboard's auth gate and
+# any code that reads os.environ.
+ENV S6_KEEP_ENV=1
+
 # Store Playwright browsers outside the volume mount so the build-time
 # install survives the /opt/data volume overlay at runtime.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
