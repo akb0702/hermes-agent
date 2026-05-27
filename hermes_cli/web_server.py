@@ -4893,6 +4893,11 @@ def start_server(
             )
 
     print(f"  Hermes Web UI → http://{host}:{port}")
+    _admin_pw = os.environ.get("ADMIN_PASSWORD", "").strip()
+    if _admin_pw:
+        print(f"  ADMIN_PASSWORD gate: ACTIVE ({len(_admin_pw)} chars)", flush=True)
+    else:
+        print("  ADMIN_PASSWORD gate: INACTIVE (env var unset or empty)", flush=True)
     # proxy_headers=False so _ws_client_is_allowed sees the real connection peer
     # rather than X-Forwarded-For's rewritten value (which would defeat the
     # loopback gate when behind a reverse proxy).
