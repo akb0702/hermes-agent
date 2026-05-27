@@ -283,14 +283,24 @@ async def admin_password_middleware(request: Request, call_next):
         # Bearer API_SERVER_KEY, so don't impose the Basic Auth gate on it
         # — OpenWebUI and similar clients can't satisfy two auth schemes.
         if request.url.path.startswith("/v1/") or request.url.path == "/v1":
-            return await call_next(request)
+            response = await call_next(request)
+            response.headers["X-Hermes-Admin-Gate"] = "active-skip-v1"
+            return response
         if not _basic_auth_ok(request.headers.get("authorization", ""), expected):
             return Response(
                 content="Authentication required",
                 status_code=401,
-                headers={"WWW-Authenticate": 'Basic realm="Hermes"'},
+                headers={
+                    "WWW-Authenticate": 'Basic realm="Hermes"',
+                    "X-Hermes-Admin-Gate": "active-challenged",
+                },
             )
-    return await call_next(request)
+        response = await call_next(request)
+        response.headers["X-Hermes-Admin-Gate"] = "active-authed"
+        return response
+    response = await call_next(request)
+    response.headers["X-Hermes-Admin-Gate"] = "inactive"
+    return response
 
 
 # ---------------------------------------------------------------------------
