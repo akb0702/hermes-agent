@@ -248,6 +248,46 @@ async def auth_middleware(request: Request, call_next):
 
 
 # ---------------------------------------------------------------------------
+# Outer HTTP Basic Auth gate, activated only when ADMIN_PASSWORD is set in
+# the environment (typical for public deployments like Railway). When unset
+# the gate is a no-op so local `hermes dashboard` flows are unchanged.
+# ---------------------------------------------------------------------------
+import base64 as _b64  # local alias to avoid clobbering existing names
+
+
+def _basic_auth_ok(header_value: str, expected_password: str) -> bool:
+    if not header_value or not header_value.lower().startswith("basic "):
+        return False
+    try:
+        decoded = _b64.b64decode(header_value.split(" ", 1)[1].strip()).decode("utf-8", "replace")
+    except Exception:
+        return False
+    # Accept either "user:password" or bare ":password" / "password"
+    supplied = decoded.split(":", 1)[1] if ":" in decoded else decoded
+    return hmac.compare_digest(supplied.encode(), expected_password.encode())
+
+
+@app.middleware("http")
+async def admin_password_middleware(request: Request, call_next):
+    """Gate every request behind HTTP Basic Auth when ADMIN_PASSWORD is set.
+
+    Runs before :func:`auth_middleware` (Starlette executes user-added
+    middleware in reverse registration order), so unauthenticated requests
+    never reach the SPA or any API route. The SPA's own session-token
+    mechanism still applies once the browser is past Basic Auth.
+    """
+    expected = os.environ.get("ADMIN_PASSWORD", "").strip()
+    if expected:
+        if not _basic_auth_ok(request.headers.get("authorization", ""), expected):
+            return Response(
+                content="Authentication required",
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="Hermes"'},
+            )
+    return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
 # Config schema — auto-generated from DEFAULT_CONFIG
 # ---------------------------------------------------------------------------
 
