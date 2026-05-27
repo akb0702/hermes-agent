@@ -278,6 +278,12 @@ async def admin_password_middleware(request: Request, call_next):
     """
     expected = os.environ.get("ADMIN_PASSWORD", "").strip()
     if expected:
+        # /v1/* is the OpenAI-compatible API server surface, reverse-proxied
+        # to the local hermes gateway. It authenticates with its own
+        # Bearer API_SERVER_KEY, so don't impose the Basic Auth gate on it
+        # — OpenWebUI and similar clients can't satisfy two auth schemes.
+        if request.url.path.startswith("/v1/") or request.url.path == "/v1":
+            return await call_next(request)
         if not _basic_auth_ok(request.headers.get("authorization", ""), expected):
             return Response(
                 content="Authentication required",
@@ -4727,6 +4733,96 @@ def _mount_plugin_api_routes():
 
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
+
+
+# ---------------------------------------------------------------------------
+# /v1/* reverse-proxy → local hermes gateway (OpenAI-compatible API server).
+#
+# Lets OpenWebUI and other OpenAI-API clients reach the gateway through the
+# same public URL/port as the dashboard. The gateway binds loopback only
+# (127.0.0.1:$API_SERVER_PORT, default 8642); this proxy is what exposes it
+# externally — gated by the gateway's own API_SERVER_KEY Bearer auth, not
+# by the dashboard's ADMIN_PASSWORD (see admin_password_middleware).
+# ---------------------------------------------------------------------------
+
+_API_SERVER_HOST = os.environ.get("API_SERVER_HOST", "127.0.0.1") or "127.0.0.1"
+_API_SERVER_PORT = os.environ.get("API_SERVER_PORT", "8642") or "8642"
+# We always target loopback for the upstream regardless of what the gateway
+# bound to — the gateway is a sibling process in the same container.
+_API_UPSTREAM_BASE = f"http://127.0.0.1:{_API_SERVER_PORT}"
+
+# Hop-by-hop headers (per RFC 7230 §6.1) that must not be forwarded through
+# a proxy. Lowercased for case-insensitive comparison.
+_HOP_BY_HOP_HEADERS: frozenset = frozenset({
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade", "host",
+    "content-length",  # httpx will re-set based on the actual body
+})
+
+
+@app.api_route(
+    "/v1/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+    include_in_schema=False,
+)
+async def _proxy_v1_to_gateway(request: Request, path: str):
+    import httpx
+
+    upstream_url = f"{_API_UPSTREAM_BASE}/v1/{path}"
+    fwd_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in _HOP_BY_HOP_HEADERS
+    }
+    body = await request.body()
+
+    client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=5.0))
+    try:
+        upstream_req = client.build_request(
+            method=request.method,
+            url=upstream_url,
+            params=request.query_params,
+            headers=fwd_headers,
+            content=body if body else None,
+        )
+        try:
+            upstream_resp = await client.send(upstream_req, stream=True)
+        except httpx.ConnectError:
+            await client.aclose()
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "detail": (
+                        f"Hermes gateway (API server) is not reachable on "
+                        f"127.0.0.1:{_API_SERVER_PORT}. Set API_SERVER_ENABLED=1 "
+                        f"so the supervised hermes-gateway service starts."
+                    ),
+                },
+            )
+
+        resp_headers = {
+            k: v for k, v in upstream_resp.headers.items()
+            if k.lower() not in _HOP_BY_HOP_HEADERS
+        }
+
+        async def _stream():
+            try:
+                async for chunk in upstream_resp.aiter_raw():
+                    yield chunk
+            finally:
+                await upstream_resp.aclose()
+                await client.aclose()
+
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(
+            _stream(),
+            status_code=upstream_resp.status_code,
+            headers=resp_headers,
+            media_type=upstream_resp.headers.get("content-type"),
+        )
+    except Exception:
+        await client.aclose()
+        raise
+
 
 mount_spa(app)
 
