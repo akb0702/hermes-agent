@@ -4908,6 +4908,15 @@ def start_server(
         print(f"  ADMIN_PASSWORD gate: ACTIVE ({len(_admin_pw)} chars)", flush=True)
     else:
         print("  ADMIN_PASSWORD gate: INACTIVE (env var unset or empty)", flush=True)
+    # Diagnostic: print env var NAMES (not values) that look interesting so
+    # we can confirm whether Railway's Service Variables actually reach the
+    # Python process. Filtered to vars containing common secret prefixes so
+    # we don't dump PATH / HOME / etc.
+    _interesting = sorted(
+        k for k in os.environ
+        if any(s in k.upper() for s in ("ADMIN", "PASSWORD", "API_SERVER", "HERMES", "RAILWAY", "OPENROUTER"))
+    )
+    print(f"  Env var names visible to process: {_interesting}", flush=True)
     # proxy_headers=False so _ws_client_is_allowed sees the real connection peer
     # rather than X-Forwarded-For's rewritten value (which would defeat the
     # loopback gate when behind a reverse proxy).
