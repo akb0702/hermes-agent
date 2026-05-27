@@ -248,59 +248,253 @@ async def auth_middleware(request: Request, call_next):
 
 
 # ---------------------------------------------------------------------------
-# Outer HTTP Basic Auth gate, activated only when ADMIN_PASSWORD is set in
-# the environment (typical for public deployments like Railway). When unset
-# the gate is a no-op so local `hermes dashboard` flows are unchanged.
+# Outer auth gate, activated only when ADMIN_PASSWORD is set in the
+# environment (typical for public deployments like Railway). Renders a
+# Hermes-styled in-page login form for browser sessions and sets an
+# HttpOnly cookie containing an HMAC token derived from ADMIN_PASSWORD.
+# When unset the gate is a no-op so local `hermes dashboard` flows are
+# unchanged.
 # ---------------------------------------------------------------------------
 import base64 as _b64  # local alias to avoid clobbering existing names
 
+_ADMIN_COOKIE_NAME = "hermes_admin_session"
+_ADMIN_LOGIN_PATH = "/__admin_login"
 
-def _basic_auth_ok(header_value: str, expected_password: str) -> bool:
-    if not header_value or not header_value.lower().startswith("basic "):
+
+def _admin_session_token(password: str) -> str:
+    """Derive a stable session token from the admin password.
+
+    Using HMAC over a fixed string keyed by the password gives us a
+    self-validating cookie value — no server-side session store, but if
+    the password is rotated every existing cookie immediately invalidates.
+    """
+    return hmac.new(
+        password.encode(),
+        b"hermes-admin-session-v1",
+        "sha256",
+    ).hexdigest()
+
+
+def _admin_cookie_valid(request: Request, expected_password: str) -> bool:
+    supplied = request.cookies.get(_ADMIN_COOKIE_NAME, "")
+    if not supplied:
         return False
-    try:
-        decoded = _b64.b64decode(header_value.split(" ", 1)[1].strip()).decode("utf-8", "replace")
-    except Exception:
-        return False
-    # Accept either "user:password" or bare ":password" / "password"
-    supplied = decoded.split(":", 1)[1] if ":" in decoded else decoded
-    return hmac.compare_digest(supplied.encode(), expected_password.encode())
+    return hmac.compare_digest(
+        supplied.encode(),
+        _admin_session_token(expected_password).encode(),
+    )
+
+
+def _admin_login_page(error: str = "", next_url: str = "/") -> HTMLResponse:
+    """Render the Hermes-styled login form."""
+    # Sanitize next_url: only allow same-origin relative paths so an
+    # attacker can't craft an ?next=https://evil.com link.
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = "/"
+    # Minimal HTML escaping for the error message (no user-controlled
+    # placeholders today, but cheap to defend in depth).
+    safe_error = (
+        error.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+    safe_next = (
+        next_url.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+    )
+    body = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Hermes Agent — Sign in</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.ico" />
+<style>
+:root {{
+  --hermes-bg: #0d1f1c;
+  --hermes-bg-deep: #081311;
+  --hermes-panel: #122a26;
+  --hermes-teal: #4dd0c5;
+  --hermes-teal-dim: #2a8278;
+  --hermes-ink: #d9e8e4;
+  --hermes-ink-dim: #6a8a83;
+  --hermes-danger: #f08a6f;
+  --hermes-border: #1f3b35;
+  --hermes-radius: 6px;
+}}
+* {{ box-sizing: border-box; }}
+html, body {{
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: radial-gradient(ellipse at top, var(--hermes-bg) 0%, var(--hermes-bg-deep) 100%);
+  color: var(--hermes-ink);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}}
+body {{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}}
+.card {{
+  width: 100%;
+  max-width: 380px;
+  background: var(--hermes-panel);
+  border: 1px solid var(--hermes-border);
+  border-radius: var(--hermes-radius);
+  padding: 32px 28px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}}
+.brand {{
+  font-family: "Cormorant Garamond", "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-weight: 600;
+  font-size: 26px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--hermes-teal);
+  margin: 0 0 6px;
+}}
+.sub {{
+  margin: 0 0 28px;
+  color: var(--hermes-ink-dim);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}}
+label {{
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--hermes-ink-dim);
+  margin: 0 0 6px;
+}}
+input[type="password"], input[type="text"] {{
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--hermes-bg-deep);
+  border: 1px solid var(--hermes-border);
+  border-radius: var(--hermes-radius);
+  color: var(--hermes-ink);
+  font: inherit;
+  outline: none;
+  transition: border-color 120ms ease;
+}}
+input:focus {{
+  border-color: var(--hermes-teal);
+}}
+button {{
+  margin-top: 18px;
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--hermes-teal);
+  color: var(--hermes-bg-deep);
+  border: none;
+  border-radius: var(--hermes-radius);
+  font: inherit;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 120ms ease;
+}}
+button:hover {{ background: #6ee0d6; }}
+.error {{
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  background: rgba(240, 138, 111, 0.1);
+  border: 1px solid rgba(240, 138, 111, 0.35);
+  border-radius: var(--hermes-radius);
+  color: var(--hermes-danger);
+  font-size: 12px;
+}}
+.foot {{
+  margin-top: 22px;
+  font-size: 11px;
+  color: var(--hermes-ink-dim);
+  text-align: center;
+}}
+</style>
+</head>
+<body>
+<form class="card" method="POST" action="{_ADMIN_LOGIN_PATH}" autocomplete="off">
+  <h1 class="brand">Hermes Agent</h1>
+  <p class="sub">Authentication required to continue.</p>
+  {'<div class="error">' + safe_error + '</div>' if safe_error else ''}
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autofocus required />
+  <input type="hidden" name="next" value="{safe_next}" />
+  <button type="submit">Sign in</button>
+  <p class="foot">Protected dashboard</p>
+</form>
+</body>
+</html>"""
+    return HTMLResponse(body, status_code=200, headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+    })
+
+
+@app.post(_ADMIN_LOGIN_PATH, include_in_schema=False)
+async def _admin_login_submit(request: Request):
+    """Handle the login form post. Sets a session cookie on success."""
+    expected = os.environ.get("ADMIN_PASSWORD", "").strip()
+    if not expected:
+        # Gate disabled — bounce to root.
+        return Response(status_code=302, headers={"Location": "/"})
+    form = await request.form()
+    supplied = str(form.get("password", ""))
+    next_url = str(form.get("next", "/")) or "/"
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = "/"
+    if not hmac.compare_digest(supplied.encode(), expected.encode()):
+        return _admin_login_page(error="Incorrect password.", next_url=next_url)
+    response = Response(status_code=302, headers={"Location": next_url})
+    response.set_cookie(
+        _ADMIN_COOKIE_NAME,
+        _admin_session_token(expected),
+        max_age=60 * 60 * 24 * 30,  # 30 days
+        httponly=True,
+        secure=True,  # set even on http; browsers ignore on http and it's correct on https
+        samesite="Lax",
+        path="/",
+    )
+    return response
 
 
 @app.middleware("http")
 async def admin_password_middleware(request: Request, call_next):
-    """Gate every request behind HTTP Basic Auth when ADMIN_PASSWORD is set.
+    """Gate every request behind a Hermes-styled login form when
+    ADMIN_PASSWORD is set in the environment.
 
-    Runs before :func:`auth_middleware` (Starlette executes user-added
-    middleware in reverse registration order), so unauthenticated requests
-    never reach the SPA or any API route. The SPA's own session-token
-    mechanism still applies once the browser is past Basic Auth.
+    /v1/* is reverse-proxied to the local hermes gateway (OpenAI API)
+    which uses its own Bearer auth — gating that here would force
+    OpenWebUI to satisfy two auth schemes.
     """
     expected = os.environ.get("ADMIN_PASSWORD", "").strip()
-    if expected:
-        # /v1/* is the OpenAI-compatible API server surface, reverse-proxied
-        # to the local hermes gateway. It authenticates with its own
-        # Bearer API_SERVER_KEY, so don't impose the Basic Auth gate on it
-        # — OpenWebUI and similar clients can't satisfy two auth schemes.
-        if request.url.path.startswith("/v1/") or request.url.path == "/v1":
-            response = await call_next(request)
-            response.headers["X-Hermes-Admin-Gate"] = "active-skip-v1"
-            return response
-        if not _basic_auth_ok(request.headers.get("authorization", ""), expected):
-            return Response(
-                content="Authentication required",
-                status_code=401,
-                headers={
-                    "WWW-Authenticate": 'Basic realm="Hermes"',
-                    "X-Hermes-Admin-Gate": "active-challenged",
-                },
-            )
-        response = await call_next(request)
-        response.headers["X-Hermes-Admin-Gate"] = "active-authed"
-        return response
-    response = await call_next(request)
-    response.headers["X-Hermes-Admin-Gate"] = "inactive"
-    return response
+    if not expected:
+        return await call_next(request)
+
+    path = request.url.path
+    # Skip the gate for the API surface and the login endpoint itself.
+    if path.startswith("/v1/") or path == "/v1" or path == _ADMIN_LOGIN_PATH:
+        return await call_next(request)
+
+    if _admin_cookie_valid(request, expected):
+        return await call_next(request)
+
+    # Browser navigations (Accept includes text/html): show the login
+    # page. Everything else (XHR / fetch / API clients) gets a 401 so
+    # they can react programmatically.
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept.lower():
+        next_url = request.url.path or "/"
+        if request.url.query:
+            next_url = f"{next_url}?{request.url.query}"
+        return _admin_login_page(next_url=next_url)
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "Authentication required"},
+    )
 
 
 # ---------------------------------------------------------------------------
